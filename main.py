@@ -1,9 +1,23 @@
+import os
 import time
+from dotenv import load_dotenv
 from agent.browser_actions import BrowserController
 from agent.os_actions import OSController
 from agent.brain import Brain
 
-MAX_STEPS = 12
+load_dotenv()
+
+MAX_STEPS = 15
+
+
+def substitute_secrets(value: str) -> str:
+    """Replace placeholder tokens with real credentials ONLY at execution time —
+    the LLM never sees the actual values, only the placeholders."""
+    if not value:
+        return value
+    value = value.replace("{{UNI_USERNAME}}", os.getenv("UNI_USERNAME", ""))
+    value = value.replace("{{UNI_PASSWORD}}", os.getenv("UNI_PASSWORD", ""))
+    return value
 
 
 def run_browser_task(task: str, brain: Brain):
@@ -27,7 +41,7 @@ def run_browser_task(task: str, brain: Brain):
             elif action == "click":
                 bot.click(target)
             elif action == "type":
-                bot.type_text(target, value)
+                bot.type_text(target, substitute_secrets(value))
             elif action == "scroll":
                 bot.scroll()
             elif action == "wait":
@@ -43,7 +57,7 @@ def run_browser_task(task: str, brain: Brain):
         history.append(decision)
         time.sleep(1)
 
-    time.sleep(3)
+    time.sleep(5)
     bot.stop()
 
 
@@ -74,12 +88,12 @@ def run_os_task(task: str, brain: Brain):
                 os_bot.launch_app(target)
                 current_state = {"info": f"launched and focused app: {target}"}
             elif action == "write_content":
-                print("  📝 Generating content (paced to avoid rate limits, may take ~30-60s)...")
+                print("  📝 Generating content (paced to avoid rate limits)...")
                 content = brain.generate_long_document(topic=target, instructions=value or "")
                 os_bot.type_text_in_active_window(content)
                 current_state = {"info": "content generated and typed into active window"}
             elif action == "type_text":
-                os_bot.type_text_in_active_window(target)
+                os_bot.type_text_in_active_window(substitute_secrets(target))
                 current_state = {"info": f"typed text starting with: {target[:40]}"}
             elif action == "done":
                 print("\n✅ Task marked done by agent.")

@@ -35,8 +35,8 @@ class Brain:
 
     def classify_task(self, task: str) -> str:
         prompt = f"""Classify this task as "browser" or "os" only.
-- browser: websites, YouTube, Instagram, search, online forms, playing videos, commenting
-- os: local files, folders, desktop apps (Word, Notepad), writing/typing documents
+- browser: websites, YouTube, Instagram, search, online forms, portals, login pages
+- os: local files, folders, any desktop app (Word, Excel, Notepad, etc.)
 
 Task: "{task}"
 Answer with ONLY one word: browser or os."""
@@ -51,23 +51,30 @@ Answer with ONLY one word: browser or os."""
     def decide_next_action(self, task: str, page_state: dict, history: list) -> dict:
         system_prompt = """You are an autonomous agent's brain. Decide the SINGLE next action.
 Respond ONLY with valid JSON, no markdown, no extra text:
-{"action": "click|type|scroll|navigate|wait|open_file|open_folder|list_folder|launch_app|open_word_blank|write_content|type_text|done", "target": "...", "value": "...", "reasoning": "short reason"}
+{"action": "click|type|scroll|navigate|wait|open_file|open_folder|list_folder|launch_app|write_content|type_text|done", "target": "...", "value": "...", "reasoning": "short reason"}
 
 Action guide:
 - navigate: go to a URL directly (target = url)
 - click: click an element (target = selector from the elements list EXACTLY as given)
 - type: fill an input (target = selector, value = text)
 - scroll: scroll the page down
-- open_word_blank: opens a new blank Microsoft Word document (use this before writing any document)
-- write_content: generate written content and type it into the currently open app (target = topic/description of what to write, value = extra instructions e.g. word count/tone). ONLY use this after open_word_blank if the goal is writing a document.
+- launch_app: launch ANY desktop application by name (target = e.g. "notepad", "winword", "excel")
+- write_content: generate written content and type it into the currently focused app (target = topic, value = extra instructions)
 - type_text: type exact literal text into the active window (target = the text)
-- list_folder / open_folder / open_file / launch_app: OS actions (target = path or app name)
+- list_folder / open_folder / open_file: OS file/folder actions (target = path)
 - done: task is fully complete
+
+IMPORTANT for opening videos/articles/content:
+- Elements whose href contains "/watch?v=" (YouTube), "/shorts/", "/status/", or similar are REAL content links — these are sorted to the TOP of the elements list for you. When the task is to "play/open/watch" something, pick one of these content-link elements and use "navigate" with target = its exact href value. Do NOT use "click" on these — navigate is far more reliable.
+- Never click on elements with no href and generic/empty text (likely icons, menus, avatars) when trying to open content — these are not the video/result.
+- If your last 2+ actions look like they had no effect (same URL/title repeating in STATE), stop clicking and use navigate with an href from the elements list instead.
+
+CREDENTIAL RULE:
+- If the task mentions placeholders like {{UNI_USERNAME}} or {{UNI_PASSWORD}}, use those EXACT placeholder strings as the "value" when typing. Never invent real credentials.
 
 Rules:
 - For browser tasks prefer direct "navigate" to a known URL when possible instead of clicking through a search engine.
 - Use selectors EXACTLY as given in the elements list (format: [data-agent-id="N"]) — never invent your own selector.
-- For "write an assignment/essay/document" tasks: first open_word_blank, then write_content — do NOT try to type_text raw content yourself, use write_content so it's generated properly.
 - Use "done" only when the task is fully complete."""
 
         user_prompt = f"""TASK: {task}
