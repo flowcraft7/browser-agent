@@ -58,6 +58,7 @@ def run_os_task(task: str, brain: Brain):
 
         action = decision.get("action")
         target = decision.get("target")
+        value = decision.get("value")
 
         try:
             if action == "open_file":
@@ -71,7 +72,15 @@ def run_os_task(task: str, brain: Brain):
                 current_state = {"folder_contents": items}
             elif action == "launch_app":
                 os_bot.launch_app(target)
-                current_state = {"info": f"launched app {target}"}
+                current_state = {"info": f"launched and focused app: {target}"}
+            elif action == "write_content":
+                print("  📝 Generating content (paced to avoid rate limits, may take ~30-60s)...")
+                content = brain.generate_long_document(topic=target, instructions=value or "")
+                os_bot.type_text_in_active_window(content)
+                current_state = {"info": "content generated and typed into active window"}
+            elif action == "type_text":
+                os_bot.type_text_in_active_window(target)
+                current_state = {"info": f"typed text starting with: {target[:40]}"}
             elif action == "done":
                 print("\n✅ Task marked done by agent.")
                 break

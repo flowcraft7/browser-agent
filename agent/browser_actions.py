@@ -21,6 +21,8 @@ class BrowserController:
             self.playwright.stop()
 
     def navigate(self, url: str):
+        if not url.startswith("http"):
+            url = "https://" + url
         self.page.goto(url, wait_until="domcontentloaded")
 
     def click(self, selector: str):
@@ -36,19 +38,37 @@ class BrowserController:
     def press_key(self, key: str):
         self.page.keyboard.press(key)
 
-    def get_page_state(self) -> dict:
-        """Return simplified page info the LLM can reason about."""
+    def get_page_state(self, max_elements: int = 20) -> dict:
+        """Return simplified, LLM-readable page state with UNIQUE, RELIABLE selectors."""
         title = self.page.title()
         url = self.page.url
-        # Simplified accessibility snapshot (interactive elements only)
-        elements = self.page.eval_on_selector_all(
-            "a, button, input, textarea, select, [role=button]",
-            """els => els.slice(0, 50).map((el, i) => ({
-                index: i,
-                tag: el.tagName.toLowerCase(),
-                text: (el.innerText || el.value || el.placeholder || '').trim().slice(0, 60),
-                selector: el.id ? '#' + el.id : el.tagName.toLowerCase()
-            }))"""
+
+        elements = self.page.evaluate(
+            """(maxEls) => {
+                const nodes = Array.from(document.querySelectorAll(
+                    'a, button, input, textarea, select, [role=button]'
+                ));
+                const visible = nodes.filter(el => {
+                    const r = el.getBoundingClientRect();
+                    const style = window.getComputedStyle(el);
+                    return r.width > 0 && r.height > 0
+                        && style.visibility !== 'hidden'
+                        && style.display !== 'none'
+                        && el.type !== 'hidden';
+                }).slice(0, maxEls);
+
+                return visible.map((el, i) => {
+                    el.setAttribute('data-agent-id', i);
+                    const text = (el.innerText || el.value || el.placeholder || el.getAttribute('aria-label') || '').trim().slice(0, 40);
+                    return {
+                        index: i,
+                        tag: el.tagName.toLowerCase(),
+                        text: text,
+                        selector: `[data-agent-id="${i}"]`
+                    };
+                });
+            }""",
+            max_elements
         )
         return {"title": title, "url": url, "elements": elements}
 
