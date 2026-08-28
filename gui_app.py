@@ -56,14 +56,13 @@ class AgentApp(ctk.CTk):
         self.run_btn.configure(state="disabled", text="Running...")
         self.set_status("Running...", "orange")
 
-        # Run the agent as a fully separate Python process launched from the command line —
-        # this keeps Playwright completely isolated from Tkinter/customtkinter's internals,
-        # which was the actual cause of the earlier "asyncio loop" errors and focus failures.
         self.process = subprocess.Popen(
             [sys.executable, "-u", "main.py", task],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
         )
 

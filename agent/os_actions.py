@@ -43,12 +43,9 @@ class OSController:
         path_str = os.path.expanduser(path_str)
         return Path(path_str).resolve()
 
-    # ---------- Robust foreground focus (works even from a background/spawned process) ----------
+    # ---------- Robust foreground focus ----------
 
     def _force_foreground(self, hwnd: int) -> bool:
-        """Standard robust Windows technique: temporarily attach our thread's input
-        to the target window's thread, which lets SetForegroundWindow succeed even
-        from a background/non-interactive process."""
         try:
             win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
 
@@ -67,14 +64,18 @@ class OSController:
 
             time.sleep(0.3)
         except Exception as e:
-            print(f"⚠️ Force-foreground failed: {e}")
+            print(f"Force-foreground error: {e}")
             return False
 
-        current = win32gui.GetForegroundWindow()
-        success = current == hwnd
-        if not success:
-            print("⚠️ Focus verification failed (window may not have gained real focus).")
-        return success
+        return win32gui.GetForegroundWindow() == hwnd
+
+    def _focus_with_retries(self, hwnd: int, retries: int = 6, wait_between: float = 0.5) -> bool:
+        """Retry focusing + verifying until it actually succeeds, or give up."""
+        for attempt in range(retries):
+            if self._force_foreground(hwnd):
+                return True
+            time.sleep(wait_between)
+        return False
 
     def _snapshot_windows(self) -> dict:
         snapshot = {}
@@ -90,7 +91,7 @@ class OSController:
             pass
         return snapshot
 
-    def _find_and_focus_new_window(self, before: dict, retries: int = 5, wait_between: float = 1.0) -> bool:
+    def _find_and_focus_new_window(self, before: dict, retries: int = 6, wait_between: float = 1.0) -> bool:
         for _ in range(retries):
             time.sleep(wait_between)
             after = self._snapshot_windows()
@@ -98,33 +99,36 @@ class OSController:
             if new_handles:
                 handle = new_handles[-1]
                 self._tracked_handle = handle
-                ok = self._force_foreground(handle)
-                print(f"  🪟 {'Focused' if ok else 'Attempted focus on'} new window: '{after[handle]}'")
+                ok = self._focus_with_retries(handle)
+                print(f"  {'Focused' if ok else 'FAILED to focus'} new window: '{after[handle]}'")
                 return ok
-        print("⚠️ No new window detected after launch — typing may go to the wrong place.")
+        print("  No new window detected after launch.")
         return False
 
-    def _focus_tracked_window(self):
-        if self._tracked_handle:
-            ok = self._force_foreground(self._tracked_handle)
-            if not ok:
-                print("⚠️ Could not confirm re-focus before typing — text may not land correctly.")
+    def _focus_tracked_window(self) -> bool:
+        if not self._tracked_handle:
+            print("  No tracked window to focus.")
+            return False
+        ok = self._focus_with_retries(self._tracked_handle)
+        if not ok:
+            print("  FAILED to confirm focus before typing.")
+        return ok
 
     def focus_window_by_title(self, title_substring: str) -> bool:
         try:
             win = Desktop(backend="uia").window(title_re=f".*{title_substring}.*")
             win.wait("visible ready", timeout=10)
             self._tracked_handle = win.handle
-            ok = self._force_foreground(win.handle)
-            print(f"  🪟 {'Focused' if ok else 'Attempted focus on'} window matching '{title_substring}'.")
+            ok = self._focus_with_retries(win.handle)
+            print(f"  {'Focused' if ok else 'FAILED to focus'} window matching '{title_substring}'.")
             return ok
         except Exception as e:
-            print(f"⚠️ Could not find/focus window '{title_substring}': {e}")
+            print(f"  Could not find/focus window '{title_substring}': {e}")
             return False
 
     # ---------- Generic app launching ----------
 
-    def launch_app(self, app_command: str, wait_seconds: float = 2.0):
+    def launch_app(self, app_command: str, wait_seconds: float = 3.0):
         if self.os_name != "Windows":
             raise NotImplementedError("Focus-tracked launch_app is Windows-only for now.")
 
@@ -198,7 +202,13 @@ class OSController:
     # ---------- Generic typing ----------
 
     def type_text_in_active_window(self, text: str, chunk_size: int = 40, delay: float = 0.03):
-        self._focus_tracked_window()
+        """Type text into the tracked window. ABORTS instead of typing blindly if
+        focus cannot be confirmed — prevents text leaking into the wrong window."""
+        focused = self._focus_tracked_window()
+        if not focused:
+            print("  ABORTING type: could not confirm focus on the target window. "
+                  "Nothing was typed to avoid sending text to the wrong place.")
+            return
 
         special = {
             '{': '{{}', '}': '{}}', '+': '{+}', '^': '{^}',
@@ -209,5 +219,8 @@ class OSController:
             safe_text = safe_text.replace(char, escaped)
 
         for i in range(0, len(safe_text), chunk_size):
+            if i > 0 and i % (chunk_size * 5) == 0:
+                if win32gui.GetForegroundWindow() != self._tracked_handle:
+                    self._focus_with_retries(self._tracked_handle, retries=3)
             send_keys(safe_text[i:i + chunk_size], pause=delay, with_spaces=True, with_newlines=True)
             time.sleep(0.25)
