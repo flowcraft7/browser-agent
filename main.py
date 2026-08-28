@@ -1,5 +1,11 @@
-import os
 import sys
+import io
+
+if sys.platform == "win32":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+
+import os
 import time
 from dotenv import load_dotenv
 from agent.browser_actions import BrowserController
@@ -20,7 +26,6 @@ def substitute_secrets(value: str) -> str:
 
 
 def run_task(task: str, brain: Brain):
-    """Unified agent loop — handles browser AND OS actions within the SAME task."""
     bot = BrowserController(headless=False)
     os_bot = OSController()
     browser_started = False
@@ -77,7 +82,7 @@ def run_task(task: str, brain: Brain):
                 os_bot.launch_app(target)
                 current_state = {"info": f"launched and focused app: {target}"}
             elif action == "write_content":
-                print("  📝 Generating content (paced to avoid rate limits)...")
+                print("  Generating content (paced to avoid rate limits)...")
                 content = brain.generate_long_document(topic=target, instructions=value or "")
                 os_bot.type_text_in_active_window(content)
                 current_state = {"info": "content generated and typed into active window"}
@@ -86,21 +91,21 @@ def run_task(task: str, brain: Brain):
                 current_state = {"info": f"typed text starting with: {target[:40]}"}
 
             elif action == "done":
-                print("\n✅ Task marked done by agent.")
+                print("\nTask marked done by agent.")
                 task_completed_normally = True
                 break
             else:
-                print(f"⚠️ Unknown action: {action}")
+                print(f"Unknown action: {action}")
 
         except Exception as e:
-            print(f"⚠️ Action failed: {e}")
+            print(f"Action failed: {e}")
             current_state = {"error": str(e)}
 
         history.append(decision)
         time.sleep(1)
 
     if browser_started and not task_completed_normally:
-        print("⚠️ Max steps reached without completion — closing browser connection.")
+        print("Max steps reached without completion — closing browser connection.")
         time.sleep(2)
         bot.stop()
     elif browser_started:

@@ -26,23 +26,29 @@ def _find_chrome_exe() -> str:
     raise FileNotFoundError("Could not find chrome.exe in standard install locations.")
 
 
-    def start(self):
-        self.playwright = sync_playwright().start()
-        try:
-            if not _is_port_open(DEBUG_PORT):
-                _launch_real_chrome_with_debug()
+def _launch_real_chrome_with_debug():
+    """Close any running Chrome and relaunch it (with YOUR real profile) with the
+    debug port open, so Playwright can attach to it directly instead of spinning
+    up a separate automated browser. This preserves all your real logins."""
+    chrome_path = _find_chrome_exe()
+    user_data_dir = os.path.join(os.environ["LOCALAPPDATA"], "Google", "Chrome", "User Data")
 
-            self.browser = self.playwright.chromium.connect_over_cdp(f"http://localhost:{DEBUG_PORT}")
-            self.context = self.browser.contexts[0] if self.browser.contexts else self.browser.new_context()
-            self.page = self.context.new_page()
-        except Exception:
-            # Clean up on failure so a retry doesn't reuse a corrupted playwright instance
-            try:
-                self.playwright.stop()
-            except Exception:
-                pass
-            self.playwright = None
-            raise
+    print("  Restarting your Chrome with debug access (your open tabs will close, logins are kept)...")
+    subprocess.run("taskkill /F /IM chrome.exe", shell=True, capture_output=True)
+    time.sleep(3)
+
+    subprocess.Popen([
+        chrome_path,
+        f"--remote-debugging-port={DEBUG_PORT}",
+        f"--user-data-dir={user_data_dir}",
+    ])
+
+    for i in range(60):
+        if _is_port_open(DEBUG_PORT):
+            time.sleep(1.5)
+            return
+        time.sleep(0.5)
+    raise RuntimeError("Chrome did not open a debuggable connection in time (waited 30s).")
 
 
 class BrowserController:
@@ -54,17 +60,24 @@ class BrowserController:
 
     def start(self):
         self.playwright = sync_playwright().start()
+        try:
+            if not _is_port_open(DEBUG_PORT):
+                _launch_real_chrome_with_debug()
 
-        if not _is_port_open(DEBUG_PORT):
-            _launch_real_chrome_with_debug()
-
-        self.browser = self.playwright.chromium.connect_over_cdp(f"http://localhost:{DEBUG_PORT}")
-        self.context = self.browser.contexts[0] if self.browser.contexts else self.browser.new_context()
-        self.page = self.context.new_page()
+            self.browser = self.playwright.chromium.connect_over_cdp(f"http://localhost:{DEBUG_PORT}")
+            self.context = self.browser.contexts[0] if self.browser.contexts else self.browser.new_context()
+            self.page = self.context.new_page()
+        except Exception:
+            try:
+                self.playwright.stop()
+            except Exception:
+                pass
+            self.playwright = None
+            raise
 
     def stop(self):
         """Detach from the real Chrome without closing it — the user's browser
-        (and the tab the agent worked in) stays open so they can see the result."""
+        stays open so they can see the result."""
         if self.playwright:
             self.playwright.stop()
 
