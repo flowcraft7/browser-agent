@@ -28,8 +28,9 @@ def _find_chrome_exe() -> str:
 
 def _launch_real_chrome_with_debug():
     """Close any running Chrome and relaunch it (with YOUR real profile) with the
-    debug port open, so Playwright can attach to it directly instead of spinning
-    up a separate automated browser. This preserves all your real logins."""
+    debug port open, so Playwright can attach to it directly. Flags added to
+    suppress the 'restore pages / didn't shut down correctly' crash popup that
+    appears after a force-kill, which otherwise blocks the new window."""
     chrome_path = _find_chrome_exe()
     user_data_dir = os.path.join(os.environ["LOCALAPPDATA"], "Google", "Chrome", "User Data")
 
@@ -41,6 +42,11 @@ def _launch_real_chrome_with_debug():
         chrome_path,
         f"--remote-debugging-port={DEBUG_PORT}",
         f"--user-data-dir={user_data_dir}",
+        "--restore-last-session=false",
+        "--disable-session-crashed-bubble",
+        "--disable-features=InfiniteSessionRestore",
+        "--no-first-run",
+        "--no-default-browser-check",
     ])
 
     for i in range(60):
@@ -64,7 +70,19 @@ class BrowserController:
             if not _is_port_open(DEBUG_PORT):
                 _launch_real_chrome_with_debug()
 
-            self.browser = self.playwright.chromium.connect_over_cdp(f"http://localhost:{DEBUG_PORT}")
+            # Retry the CDP connection a few times — even once the port is open,
+            # Chrome can take a moment longer to fully accept connections.
+            last_error = None
+            for attempt in range(5):
+                try:
+                    self.browser = self.playwright.chromium.connect_over_cdp(f"http://localhost:{DEBUG_PORT}")
+                    break
+                except Exception as e:
+                    last_error = e
+                    time.sleep(2)
+            else:
+                raise RuntimeError(f"Could not connect to Chrome over CDP after retries: {last_error}")
+
             self.context = self.browser.contexts[0] if self.browser.contexts else self.browser.new_context()
             self.page = self.context.new_page()
         except Exception:
