@@ -1,46 +1,70 @@
-from playwright.sync_api import sync_playwright, Page, BrowserContext
-from playwright_stealth import Stealth
+import os
+import time
+import socket
+import subprocess
 from pathlib import Path
+from playwright.sync_api import sync_playwright, Page, Browser, BrowserContext
 from typing import Optional
 
-PROFILE_DIR = str(Path.home() / "AppData" / "Local" / "AutonomousAgentProfile")
+DEBUG_PORT = 9222
+
+
+def _is_port_open(port: int, host: str = "localhost") -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.5)
+        return s.connect_ex((host, port)) == 0
+
+
+def _find_chrome_exe() -> str:
+    candidates = [
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    raise FileNotFoundError("Could not find chrome.exe in standard install locations.")
+
+
+    def start(self):
+        self.playwright = sync_playwright().start()
+        try:
+            if not _is_port_open(DEBUG_PORT):
+                _launch_real_chrome_with_debug()
+
+            self.browser = self.playwright.chromium.connect_over_cdp(f"http://localhost:{DEBUG_PORT}")
+            self.context = self.browser.contexts[0] if self.browser.contexts else self.browser.new_context()
+            self.page = self.context.new_page()
+        except Exception:
+            # Clean up on failure so a retry doesn't reuse a corrupted playwright instance
+            try:
+                self.playwright.stop()
+            except Exception:
+                pass
+            self.playwright = None
+            raise
 
 
 class BrowserController:
     def __init__(self, headless: bool = False):
         self.playwright = None
+        self.browser: Optional[Browser] = None
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
-        self.headless = headless
 
     def start(self):
         self.playwright = sync_playwright().start()
-        # Persistent profile: logins/cookies (e.g. YouTube sign-in) are remembered across runs.
-        # This is a SEPARATE profile from your real Chrome — log in once here, it'll stick.
-        try:
-            self.context = self.playwright.chromium.launch_persistent_context(
-                user_data_dir=PROFILE_DIR,
-                headless=self.headless,
-                channel="chrome",
-                viewport={"width": 1366, "height": 768},
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
-                ),
-            )
-        except Exception:
-            self.context = self.playwright.chromium.launch_persistent_context(
-                user_data_dir=PROFILE_DIR,
-                headless=self.headless,
-                viewport={"width": 1366, "height": 768},
-            )
 
-        self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
-        Stealth().apply_stealth_sync(self.page)
+        if not _is_port_open(DEBUG_PORT):
+            _launch_real_chrome_with_debug()
+
+        self.browser = self.playwright.chromium.connect_over_cdp(f"http://localhost:{DEBUG_PORT}")
+        self.context = self.browser.contexts[0] if self.browser.contexts else self.browser.new_context()
+        self.page = self.context.new_page()
 
     def stop(self):
-        if self.context:
-            self.context.close()
+        """Detach from the real Chrome without closing it — the user's browser
+        (and the tab the agent worked in) stays open so they can see the result."""
         if self.playwright:
             self.playwright.stop()
 
@@ -50,7 +74,7 @@ class BrowserController:
         else:
             url = "https://" + url
         self.page.goto(url, wait_until="domcontentloaded")
-        self.page.wait_for_timeout(1500)  # let JS-heavy SPAs (YouTube, etc.) finish rendering
+        self.page.wait_for_timeout(1500)
         self._dismiss_consent_dialogs()
 
     def _dismiss_consent_dialogs(self):
@@ -83,9 +107,6 @@ class BrowserController:
         self.page.keyboard.press(key)
 
     def get_page_state(self, max_elements: int = 40) -> dict:
-        """Return simplified, LLM-readable page state.
-        Elements linking to actual content (e.g. /watch?v= video pages) are sorted
-        to the TOP of the list so they aren't buried behind header/sidebar clutter."""
         title = self.page.title()
         url = self.page.url
 
@@ -105,11 +126,7 @@ class BrowserController:
 
                 const mapped = visible.map((el) => {
                     const text = (el.innerText || el.value || el.placeholder || el.getAttribute('aria-label') || '').trim().slice(0, 40);
-                    const result = {
-                        tag: el.tagName.toLowerCase(),
-                        text: text,
-                        _el: el
-                    };
+                    const result = { tag: el.tagName.toLowerCase(), text: text, _el: el };
                     if (el.tagName.toLowerCase() === 'a' && el.href) {
                         result.href = el.href;
                     }
@@ -137,12 +154,7 @@ class BrowserController:
 
                 return deduped.map((item, i) => {
                     item._el.setAttribute('data-agent-id', i);
-                    const out = {
-                        index: i,
-                        tag: item.tag,
-                        text: item.text,
-                        selector: `[data-agent-id="${i}"]`
-                    };
+                    const out = { index: i, tag: item.tag, text: item.text, selector: `[data-agent-id="${i}"]` };
                     if (item.href) out.href = item.href;
                     return out;
                 });
@@ -150,6 +162,17 @@ class BrowserController:
             max_elements
         )
         return {"title": title, "url": url, "elements": elements}
+
+    def get_page_text(self, max_chars: int = 800) -> str:
+        try:
+            text = self.page.inner_text("body")
+        except Exception:
+            text = ""
+        text = " ".join(text.split())
+        return text[:max_chars]
+
+    def is_started(self) -> bool:
+        return self.page is not None
 
     def screenshot(self, path: str = "screenshot.png"):
         self.page.screenshot(path=path)
